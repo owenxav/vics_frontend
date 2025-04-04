@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "20.x"
+          node-version: "20.x"  # Recommended LTS version for compatibility
 
       - name: Cache Node.js modules
         uses: actions/cache@v3
@@ -62,7 +62,7 @@ jobs:
 
       - name: Deploy Next.js Application to AWS Lightsail
         env:
-          LIGHTSAIL_IP: "13.43.41.67"  # Replace with your Lightsail instance's public IP
+          LIGHTSAIL_IP: "13.43.41.67"  # Ensure this is your Lightsail instance's public IP
         run: |
           echo "Deploying Next.js application to AWS Lightsail..."
 
@@ -147,14 +147,6 @@ jobs:
             if systemctl is-active --quiet nginx; then
               sudo systemctl reload nginx
             fi
-          "
-
-      - name: Capture Logs for Monitoring
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
-            echo 'Capturing logs...'
-            pm2 logs --lines 100 > /var/www/html/pm2_logs.txt
-            tail -n 100 /var/log/syslog > /var/www/html/system_logs.txt
           "
 
       - name: Cleanup
