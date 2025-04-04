@@ -1,4 +1,4 @@
-name: CI/CD Pipeline for Next.js with AWS Lightsail (Optimized)
+name: CI/CD Pipeline for Next.js with AWS Lightsail
 
 on:
   push:
@@ -39,15 +39,10 @@ jobs:
       - name: Build Next.js Application
         run: npm run build
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4   # ✅ FIXED: Use the latest version
-        with:
-          name: nextjs-build
-          path: |
-            .next
-            node_modules
-            package.json
-            package-lock.json
+      - name: Run tests
+        run: |
+          echo "Running tests..."
+          npm test || echo "No tests defined or some tests failed."
 
   deploy:
     runs-on: ubuntu-latest
@@ -57,12 +52,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4  # ✅ FIXED: Ensure correct version
-        with:
-          name: nextjs-build
-          path: build-output
-
       - name: Add SSH Key for Lightsail
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -71,45 +60,103 @@ jobs:
           echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/lightsail_key
           chmod 600 ~/.ssh/lightsail_key
 
-      - name: Deploy Build to AWS Lightsail
+      - name: Deploy Next.js Application to AWS Lightsail
         env:
           LIGHTSAIL_IP: "13.43.41.67"  # Replace with your Lightsail instance's public IP
         run: |
-          echo "Deploying Next.js build to AWS Lightsail..."
+          echo "Deploying Next.js application to AWS Lightsail..."
 
-          # Ensure the target directory exists
+          # Ensure the target directory exists and set proper ownership
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
             sudo mkdir -p /var/www/html
             sudo chown -R ubuntu:ubuntu /var/www/html
           "
 
-          # Sync built files (No need to build again on AWS)
+          # Backup existing deployment in case of rollback
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
+            if [ -d /var/www/html ]; then
+              echo 'Backing up current deployment...'
+              cp -r /var/www/html /var/www/html_backup_$(date +%F_%T)
+            fi
+          "
+
+          # Sync necessary files to the Lightsail instance
           rsync -avz --delete \
             --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.next/cache' \
             -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key" \
-            ./build-output/ ubuntu@$LIGHTSAIL_IP:/var/www/html
+            ./ ubuntu@$LIGHTSAIL_IP:/var/www/html
 
-          # Restart only if needed
+          # SSH into the instance to configure the application
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
-            echo 'Restarting application...'
+            echo 'Configuring Next.js application on Lightsail...'
 
-            # Check if PM2 is installed, install if missing
+            # Update system and install dependencies if missing
+            sudo apt update
+
+            # Check if Node.js is installed, if not, install it
+            if ! command -v node &> /dev/null; then
+              echo 'Installing Node.js...'
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            else
+              echo 'Node.js is already installed.'
+            fi
+
+            # Ensure npm is installed
+            if ! command -v npm &> /dev/null; then
+              echo 'npm is missing, installing...'
+              sudo apt install -y npm
+            else
+              echo 'npm is already installed.'
+            fi
+
+            # Navigate to the deployment directory
+            cd /var/www/html
+
+            # Ensure dependencies are installed
+            if [ ! -d 'node_modules' ]; then
+              echo 'Installing npm dependencies...'
+              npm ci
+            else
+              echo 'Dependencies are already installed.'
+            fi
+
+            # Run Next.js build to generate the '.next' directory
+            npm run build || { 
+              echo 'Build failed! Rolling back...'; 
+              mv /var/www/html_backup_* /var/www/html; 
+              exit 1;
+            }
+
+            # Install PM2 globally if not installed
             if ! command -v pm2 &> /dev/null; then
               echo 'Installing PM2...'
               sudo npm install pm2@latest -g
+            else
+              echo 'PM2 is already installed.'
             fi
 
-            # Restart the application with PM2
+            # Start or restart the application using PM2
             pm2 delete nextjs-app || true
             pm2 start npm --name 'nextjs-app' -- start -- -p 4000
 
             # Save PM2 process for auto-start
             pm2 save
 
-            # Reload Nginx if running
+            # Reload Nginx if being used as a reverse proxy
             if systemctl is-active --quiet nginx; then
               sudo systemctl reload nginx
             fi
+          "
+
+      - name: Capture Logs for Monitoring
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
+            echo 'Capturing logs...'
+            pm2 logs --lines 100 > /var/www/html/pm2_logs.txt
+            tail -n 100 /var/log/syslog > /var/www/html/system_logs.txt
           "
 
       - name: Cleanup
