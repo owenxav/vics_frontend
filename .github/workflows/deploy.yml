@@ -49,63 +49,66 @@ jobs:
     needs: build
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Add SSH Key for Lightsail
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/lightsail_key
-          chmod 600 ~/.ssh/lightsail_key
+    - name: Add SSH Key for Lightsail
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/lightsail_key
+        chmod 600 ~/.ssh/lightsail_key
 
-      - name: Deploy Next.js Application to AWS Lightsail
-        env:
-          LIGHTSAIL_IP: "13.43.41.67"  # Replace with your Lightsail instance's public IP
-        run: |
-          echo "Deploying Next.js application to AWS Lightsail..."
+    - name: Deploy Next.js Application to AWS Lightsail
+      env:
+        LIGHTSAIL_IP: "13.43.41.67"  # Replace with your Lightsail instance's public IP
+      run: |
+        echo "Deploying Next.js application to AWS Lightsail..."
 
-          # Sync necessary files to the Lightsail instance
-          rsync -avz --delete \
-            --exclude='.git' \
-            --exclude='node_modules' \
-            --exclude='.next/cache' \
-            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key" \
-            ./ ubuntu@$LIGHTSAIL_IP:/var/www/html
+        # Ensure the target directory exists on the server
+        ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "sudo mkdir -p /var/www/html && sudo chown -R ubuntu:ubuntu /var/www/html"
 
-          # SSH into the instance to configure the application
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
-            echo 'Configuring Next.js application on Lightsail...'
-            
-            # Navigate to the deployment directory
-            cd /var/www/html
+        # Sync necessary files to the Lightsail instance
+        rsync -avz --delete \
+          --exclude='.git' \
+          --exclude='node_modules' \
+          --exclude='.next/cache' \
+          -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key" \
+          ./ ubuntu@$LIGHTSAIL_IP:/var/www/html
 
-            # Ensure dependencies are installed
-            npm ci
+        # SSH into the instance to configure the application
+        ssh -o StrictHostKeyChecking=no -i ~/.ssh/lightsail_key ubuntu@$LIGHTSAIL_IP "
+          echo 'Configuring Next.js application on Lightsail...'
+          
+          # Navigate to the deployment directory
+          cd /var/www/html
 
-            # Run Next.js build to generate the '.next' directory
-            npm run build
+          # Ensure dependencies are installed
+          npm ci
 
-            # Install PM2 globally if not installed
-            if ! command -v pm2 &> /dev/null; then
-              sudo npm install pm2@latest -g
-            fi
+          # Run Next.js build to generate the '.next' directory
+          npm run build
 
-            # Start or restart the application using PM2
-            pm2 delete nextjs-app || true
-            pm2 start npm --name 'nextjs-app' -- start -- -p 4000
+          # Install PM2 globally if not installed
+          if ! command -v pm2 &> /dev/null; then
+            sudo npm install pm2@latest -g
+          fi
 
-            # Save PM2 process for auto-start
-            pm2 save
+          # Start or restart the application using PM2
+          pm2 delete nextjs-app || true
+          pm2 start npm --name 'nextjs-app' -- start -- -p 4000
 
-            # Reload Nginx if being used as a reverse proxy
-            if systemctl is-active --quiet nginx; then
-              sudo systemctl reload nginx
-            fi
-          "
+          # Save PM2 process for auto-start
+          pm2 save
 
-      - name: Cleanup
-        run: |
-          echo "Cleaning up temporary files..."
-          rm -f ~/.ssh/lightsail_key
+          # Reload Nginx if being used as a reverse proxy
+          if systemctl is-active --quiet nginx; then
+            sudo systemctl reload nginx
+          fi
+        "
+
+    - name: Cleanup
+      run: |
+        echo "Cleaning up temporary files..."
+        rm -f ~/.ssh/lightsail_key
